@@ -1,7 +1,9 @@
+The objective of the exercise is to do the sentiment analysis based on the tweets data downloaded from Twitter.
+We will do sentiment analysis of movie "Iron Man 3" using Hive and visualize the sentiment data using Tableau.
+The dataset containing tweets of "Iron Man 3" movie is located at below location in HDFS
+The objective of this step is to copy the Iron Man 3 movie tweets in your home directory /user/YOUR_USER_NAME in HDFS
 
 hadoop fs -cp /data/SentimentFiles /user/$USER
-
-hive
 
 ADD JAR hdfs:///data/hive/json-serde-1.1.9.9-Hive13-jar-with-dependencies.jar;
 SET hive.support.sql11.reserved.keywords=false;
@@ -44,6 +46,7 @@ LOCATION '/user/${env:USER}/SentimentFiles/SentimentFiles/upload/data/tweets_raw
 
 SELECT count(id) FROM tweets_raw;
 
+The objective of this step is to create an external table dictionary. This table contains English words and their polarity. Polarity means if the word has positive, negative, or neutral sentiment. Since a tweet consists of words, this table will help us in calculating the sentiment of the entire tweet.
 CREATE EXTERNAL TABLE dictionary (
 type string,
 length int,
@@ -59,6 +62,23 @@ LOCATION '/user/${env:USER}/SentimentFiles/SentimentFiles/upload/data/dictionary
 Polarity means if the word has positive, negative, or neutral sentiment. Since a tweet consists of words, this table will help us in calculating the sentiment of the entire tweet.
 select polarity from dictionary where word='acridness';
 
+CREATE EXTERNAL TABLE time_zone_map (
+time_zone string,
+country string,
+notes string
+)
+ROW FORMAT DELIMITED FIELDS TERMINATED BY '\t' 
+STORED AS TEXTFILE
+LOCATION '/user/${env:USER}/SentimentFiles/SentimentFiles/upload/data/time_zone_map';
+
+CREATE VIEW tweets_simple AS
+SELECT          
+id,
+cast ( from_unixtime( unix_timestamp(concat( '2013 ', substring(created_at,5,15)), 'yyyy MMM dd hh:mm:ss')) as timestamp) ts,
+text,
+user.time_zone 
+FROM tweets_raw;
+
 CREATE VIEW tweets_clean AS
 SELECT
 id,
@@ -67,6 +87,21 @@ text,
 m.country 
 FROM tweets_simple t LEFT OUTER JOIN time_zone_map m ON t.time_zone = m.time_zone;
 
+we will create l1, l2, and l3 views which will help us in calculating the sentiment of each tweet.
+
+create view l1 as select id, words from tweets_raw lateral view explode(sentences(lower(text))) dummy as words;
+create view l2 as select id, word from l1 lateral view explode( words ) dummy as word ;
+create view l3 as select 
+id, 
+l2.word,
+case d.polarity 
+when  'negative' then -1
+when 'positive' then 1 
+else 0 end as polarity 
+from l2 left outer join dictionary d on l2.word = d.word;
+
+we calculate the sentiment of each tweet. We create the new table tweets_sentiment which groups the tweets of l3 view on the basis of id, sums up the polarity of each word and assigns each tweet a sentiment label such as positive, negative, or neutral.
+
 create table tweets_sentiment stored as orc as select 
 id, 
 case 
@@ -74,6 +109,8 @@ when sum( polarity ) > 0 then 'positive'
 when sum( polarity ) < 0 then 'negative'  
 else 'neutral' end as sentiment 
 from l3 group by id;
+
+We join tweets_clean and tweets_sentiment tables and store sentiment of each tweet. Each row of the tweetsbi table contains tweet id, timestamp, tweet text, country, and its sentiment
 
 CREATE TABLE tweetsbi 
 STORED AS ORC
